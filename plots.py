@@ -158,23 +158,49 @@ def score_distributions(y_true, scores, name, ax=None):
 
 
 def model_comparison(df, ax=None):
-    """Horizontal grouped bar of precision/recall/F1."""
+    """Horizontal grouped bar of precision/recall/F1.
+
+    If `df` carries `*_lo` / `*_hi` columns (e.g. `F1_lo`, `F1_hi`,
+    `precision_lo`, `precision_hi`, `recall_lo`, `recall_hi`), draws
+    paired-bootstrap 95% CI caps on each bar. Lets the figure carry the
+    same uncertainty information that's currently only in the §5 stdout
+    table.
+    """
     if ax is None:
         _, ax = plt.subplots(figsize=(8, 4.5))
     df = df.sort_values("F1")
     y = np.arange(len(df))
     h = 0.25
+
+    has_p_ci = {"precision_lo", "precision_hi"}.issubset(df.columns)
+    has_r_ci = {"recall_lo", "recall_hi"}.issubset(df.columns)
+    has_f_ci = {"F1_lo", "F1_hi"}.issubset(df.columns)
+
     ax.barh(y - h, df["precision"], height=h, label="precision", color=ACCENT)
     ax.barh(y, df["recall"], height=h, label="recall", color="#7e57c2")
     ax.barh(y + h, df["F1"], height=h, label="F1", color=FRAUD)
+
+    if has_p_ci:
+        ax.errorbar(df["precision"], y - h,
+                    xerr=[df["precision"] - df["precision_lo"], df["precision_hi"] - df["precision"]],
+                    fmt="none", ecolor="black", capsize=2.5, lw=0.7)
+    if has_r_ci:
+        ax.errorbar(df["recall"], y,
+                    xerr=[df["recall"] - df["recall_lo"], df["recall_hi"] - df["recall"]],
+                    fmt="none", ecolor="black", capsize=2.5, lw=0.7)
+    if has_f_ci:
+        ax.errorbar(df["F1"], y + h,
+                    xerr=[df["F1"] - df["F1_lo"], df["F1_hi"] - df["F1"]],
+                    fmt="none", ecolor="black", capsize=2.5, lw=0.7)
+
     for i, (a, b, c) in enumerate(zip(df["precision"], df["recall"], df["F1"])):
         ax.text(a + 0.005, i - h, f"{a:.2f}", va="center", fontsize=8)
         ax.text(b + 0.005, i, f"{b:.2f}", va="center", fontsize=8)
         ax.text(c + 0.005, i + h, f"{c:.2f}", va="center", fontsize=8)
     ax.set_yticks(y)
     ax.set_yticklabels(df["model"])
-    ax.set_xlim(0, 1.05)
-    ax.set_xlabel("score")
+    ax.set_xlim(0, 1.15)
+    ax.set_xlabel("score (with paired-bootstrap 95% CI caps when available)")
     ax.set_title("test-set metrics by model")
     ax.legend(loc="lower right")
     return ax

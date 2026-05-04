@@ -81,28 +81,59 @@ class LogisticRegressionWeighted:
 
 
 class GaussianAnomalyDetector:
-    """Fit a univariate Gaussian per feature on the negative class.
+    """Fit a Gaussian on the negative class.
 
-    Score: sum of log-densities (higher = more 'normal'). Anomalies have
-    low scores. The threshold (epsilon) is picked on a labelled validation
+    Two modes:
+    - `cov='diag'` (default, original behaviour): one univariate Gaussian
+      per feature, log-density summed across features assuming
+      independence. The PCA-rotated V1..V28 features are decorrelated
+      *globally*, but that does not imply independence *conditional on
+      class*, so the diagonal model mis-specifies the joint distribution.
+    - `cov='full'`: a single multivariate Gaussian with the empirical
+      covariance of the negative class. This is the fair comparison to
+      supervised models that implicitly use the joint distribution.
+
+    Score: log-density (higher = more 'normal'). Anomalies have low
+    scores. The threshold (epsilon) is picked on a labelled validation
     set by maximising F1.
     """
 
-    def __init__(self, eps_var=1e-6):
+    def __init__(self, eps_var=1e-6, cov="diag", reg=1e-3):
         self.mu = None
         self.var = None
-        self.eps_var = eps_var  # floor to keep variance from collapsing
+        self.cov = None
+        self.cov_inv = None
+        self.cov_logdet = None
+        self.eps_var = eps_var
+        self.cov_kind = cov
+        self.reg = reg                 # Tikhonov regularisation for full Σ
         self.epsilon = None
 
     def fit(self, X_neg):
         self.mu = X_neg.mean(axis=0)
-        self.var = X_neg.var(axis=0) + self.eps_var
+        if self.cov_kind == "diag":
+            self.var = X_neg.var(axis=0) + self.eps_var
+        elif self.cov_kind == "full":
+            d = X_neg.shape[1]
+            self.cov = np.cov(X_neg, rowvar=False) + self.reg * np.eye(d)
+            self.cov_inv = np.linalg.inv(self.cov)
+            sign, logdet = np.linalg.slogdet(self.cov)
+            if sign <= 0:
+                raise ValueError("Σ is not positive-definite; raise reg")
+            self.cov_logdet = float(logdet)
+        else:
+            raise ValueError(f"unknown cov mode: {self.cov_kind!r}")
         return self
 
     def score(self, X):
-        # log N(x; mu, var) summed across features, ignoring the constant
         diff = X - self.mu
-        return -0.5 * (np.log(2 * np.pi * self.var) + diff ** 2 / self.var).sum(axis=1)
+        if self.cov_kind == "diag":
+            return -0.5 * (np.log(2 * np.pi * self.var) +
+                           diff ** 2 / self.var).sum(axis=1)
+        # full Σ: log N(x; mu, Σ) up to additive constant
+        d = diff.shape[1]
+        quad = np.einsum("ni,ij,nj->n", diff, self.cov_inv, diff)
+        return -0.5 * (d * np.log(2 * np.pi) + self.cov_logdet + quad)
 
     def select_epsilon(self, scores, y_true):
         """Sweep candidate thresholds, pick the one maximising F1."""
@@ -128,3 +159,26 @@ class GaussianAnomalyDetector:
         if self.epsilon is None:
             raise ValueError("call select_epsilon on a labelled validation set first")
         return (self.score(X) < self.epsilon).astype(int)
+
+
+def bootstrap_metric_ci(y_true, y_pred, metric_fn, n_boot=1000,
+                        alpha=0.05, seed=0):
+    """Paired-bootstrap (1-alpha) CI for any (y_true, y_pred) -> scalar
+    metric. Returns (point, lo, hi).
+
+    Useful where a small number of positives (e.g. 98 in the test set)
+    means a 1-fraud move shifts F1 / recall by ~1pp; without the CI a
+    cross-model gap inside that band is sampling noise, not signal.
+    """
+    rng = np.random.default_rng(seed)
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    n = len(y_true)
+    point = float(metric_fn(y_true, y_pred))
+    boots = np.empty(n_boot)
+    for b in range(n_boot):
+        idx = rng.integers(0, n, size=n)
+        boots[b] = metric_fn(y_true[idx], y_pred[idx])
+    lo = float(np.quantile(boots, alpha / 2))
+    hi = float(np.quantile(boots, 1 - alpha / 2))
+    return point, lo, hi

@@ -370,7 +370,6 @@ def cost_threshold_sweep(y_true, scores_dict, cost_ratios=(1, 5, 20),
                 pred = (s >= t).astype(int)
                 FP = int(((pred == 1) & (y_true == 0)).sum())
                 FN = int(((pred == 0) & (y_true == 1)).sum())
-                cost_fn = FN * mean_amount * ratio
                 cost_fp = FP * mean_amount
                 # net savings = chargebacks avoided minus friction
                 avoided = (y_true.sum() - FN) * mean_amount * ratio
